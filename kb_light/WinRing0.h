@@ -9,6 +9,7 @@ VOID(*DeinitializeOls)() = NULL;
 BYTE(*ReadIoPortByte)(USHORT port) = NULL;
 VOID(*WriteIoPortByte)(USHORT port, BYTE value) = NULL;
 
+// credits: http://read.pudn.com/downloads75/sourcecode/windows/vxd/279232/fancontrol/portio.cpp__.htm
 // Registers of the embedded controller   
 #define EC_DATAPORT     0x62    // EC data io-port   
 #define EC_CTRLPORT     0x66    // EC control io-port   
