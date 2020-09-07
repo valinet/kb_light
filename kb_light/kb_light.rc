@@ -68,12 +68,12 @@ BEGIN
         BLOCK "040904b0"
         BEGIN
             VALUE "CompanyName", "VALINET Solutions SRL"
-            VALUE "FileDescription", "kb_light"
+            VALUE "FileDescription", "ThinkPad Keyboard Backlight Management Service"
             VALUE "FileVersion", "1.0.0.1"
             VALUE "InternalName", "kb_light.exe"
             VALUE "LegalCopyright", "Copyright (C) 2020 VALINET Solutions SRL"
             VALUE "OriginalFilename", "kb_light.exe"
-            VALUE "ProductName", "kb_light"
+            VALUE "ProductName", "ThinkPad Keyboard Backlight Management Service"
             VALUE "ProductVersion", "1.0.0.1"
         END
     END

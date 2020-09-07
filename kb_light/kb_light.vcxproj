@@ -139,7 +139,9 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="application.c" />
     <ClCompile Include="main.c" />
+    <ClCompile Include="service.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="common.h" />

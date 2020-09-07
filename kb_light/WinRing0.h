@@ -270,7 +270,7 @@ DWORD Initialize()
     return 0;
 }
 
-VOID Deinitialize()
+VOID Uninitialize()
 {
     DeinitializeOls();
     FreeLibrary(hWinRing0);

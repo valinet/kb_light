@@ -107,7 +107,7 @@ DWORD Initialize()
 	return 0;
 }
 
-VOID Deinitialize()
+VOID Uninitialize()
 {
 	return;
 }
