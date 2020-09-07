@@ -15,7 +15,7 @@ sc description kb_light "kb_light service (https://github.com/valinet/kb_light)"
 The service is set to start automatically at boot. To run immediatly, type:
 
 ```
-sc start AudioPot
+sc start kb_light
 ```
 
 To save keyboard backlight state when the computer turns off, add a log off script that calls "C:\...\kb_light.exe x".
