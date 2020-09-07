@@ -39,14 +39,15 @@ BYTE GetKeyboardBacklight()
 	);
 	if (bytesReturned && (rcv & DRIVER_IBMPMDRV_READY_MASK))
 	{
-		status = (rcv >> 8) & 0xF;
+		status = rcv & 0xF;
 	}
 	CloseHandle(hFile);
 	return status;
 }
 
-VOID SetKeyboardBacklight(BYTE status)
+BYTE SetKeyboardBacklight(BYTE status)
 {
+	BYTE prev = 0;
 	if (status != KEYBOARD_BACKLIGHT_DISABLED &&
 		status != KEYBOARD_BACKLIGHT_DIM &&
 		status != KEYBOARD_BACKLIGHT_BRIGHT
@@ -81,6 +82,7 @@ VOID SetKeyboardBacklight(BYTE status)
 	);
 	if (bytesReturned && (rcv & DRIVER_IBMPMDRV_READY_MASK))
 	{
+		prev = rcv & 0xF;
 		snt = ((rcv & DRIVER_IBMPMDRV_CUSTOM_MASK) != 0 ? DRIVER_IBMPMDRV_WRITE_MASK : 0)
 			| (rcv & 0xF0)
 			| status;
@@ -97,6 +99,7 @@ VOID SetKeyboardBacklight(BYTE status)
 		);
 	}
 	CloseHandle(hFile);
+	return prev;
 }
 
 DWORD Initialize()

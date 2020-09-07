@@ -1,17 +1,20 @@
 #include <Windows.h>
 #include <stdio.h>
-#include <shlwapi.h>
-#pragma comment(lib, "Shlwapi.lib")
-#include <Lmcons.h>
+#include <tlhelp32.h>
 #define DRIVER_IBMPMDRV					0
 #define DRIVER_WINRING0					1
 #define DRIVER DRIVER_IBMPMDRV
-#define TIMEOUT							2000
+#define TIMEOUT_FULLSCREEN_CHECK		2000
+#define TIMEOUT_CREATEPROCESS			5000
 #if DRIVER == DRIVER_IBMPMDRV
 #include "IbmPmDrv.h"
 #elif DRIVER == DRIVER_WINRING0
 #include "WinRing0.h"
 #endif
+#define SETTINGS_LOCATION 				L"SOFTWARE\\VALINET Solutions SRL\\kb_light"
+#define CH(x) (x + '0')
+#define ARG_QUERY						'?'
+#define ARG_FULLSCREEN_QUERY			'd'
 
 SERVICE_STATUS        g_ServiceStatus = { 0 };
 SERVICE_STATUS_HANDLE g_StatusHandle = NULL;
@@ -31,6 +34,20 @@ DWORD WINAPI ServiceWorkerThread(
 	{
 		return NULL;
 	}
+
+	HANDLE jobHandle = CreateJobObject(
+		NULL,
+		NULL
+	);
+	JOBOBJECT_BASIC_LIMIT_INFORMATION jobInfoBasic;
+	jobInfoBasic.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+	JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobInfo;
+	jobInfo.BasicLimitInformation = jobInfoBasic;
+	SetInformationJobObject(
+		jobHandle,
+		JobObjectExtendedLimitInformation, &jobInfo,
+		sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION)
+	);
 
 	// https://support.microsoft.com/en-my/help/110148/prb-error-invalid-parameter-from-writefile-or-readfile
 	OVERLAPPED oOverlap = { 0 };
@@ -58,7 +75,7 @@ DWORD WINAPI ServiceWorkerThread(
 
 	HANDLE hPipe = CreateNamedPipe(
 		L"\\\\.\\pipe\\keybd_light",
-		PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED,
+		PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
 		PIPE_TYPE_BYTE,
 		1,
 		0,
@@ -91,139 +108,256 @@ DWORD WINAPI ServiceWorkerThread(
 	}
 
 	BYTE value = 0;
-	QUERY_USER_NOTIFICATION_STATE state, prev_state;
-	SHQueryUserNotificationState(
-		&prev_state
-	);
 	while (TRUE)
 	{
-		SHQueryUserNotificationState(
-			&state
+		HANDLE winLogon = NULL;
+		PROCESSENTRY32 entry;
+		entry.dwSize = sizeof(PROCESSENTRY32);
+		HANDLE snapshot = CreateToolhelp32Snapshot(
+			TH32CS_SNAPPROCESS,
+			NULL
 		);
-		if (state != prev_state)
+		if (Process32First(snapshot, &entry) == TRUE)
 		{
-			if (state == QUNS_BUSY)
+			while (Process32Next(snapshot, &entry) == TRUE)
 			{
-				value = GetKeyboardBacklight();
-				SetKeyboardBacklight(KEYBOARD_BACKLIGHT_DISABLED);
-			}
-			else
-			{
-				SetKeyboardBacklight(value);
-			}
-		}
-		prev_state = state;
-		HANDLE handles[2];
-		handles[0] = hEvent;
-		handles[1] = g_ServiceStopEvent;
-		DWORD dwRes = WaitForMultipleObjects(
-			2,
-			&handles,
-			FALSE,
-			TIMEOUT
-		);
-		if (dwRes == WAIT_OBJECT_0 + 1)
-		{
-			break;
-		}
-		else if (dwRes == WAIT_OBJECT_0 + 0)
-		{
-			TCHAR buffer = 0;
-			BOOL result = ReadFile(
-				hPipe,
-				&buffer,
-				1 * sizeof(TCHAR),
-				NULL,
-				&oOverlap
-			);
-			if (result)
-			{
-				DWORD numberOfBytesRead = 0;
-				result = GetOverlappedResult(
-					hPipe,
-					&oOverlap,
-					&numberOfBytesRead,
-					TRUE
-				);
-				if (result && numberOfBytesRead)
+				if (!wcscmp(entry.szExeFile, L"winlogon.exe"))
 				{
-					if (buffer == 'x')
+					if (!(winLogon = OpenProcess(
+						PROCESS_ALL_ACCESS,
+						FALSE,
+						entry.th32ProcessID
+					)))
 					{
-						value = GetKeyboardBacklight();
-						char szLibPath[_MAX_PATH];
-						GetModuleFileNameA(
-							GetModuleHandle(NULL),
-							szLibPath,
-							_MAX_PATH
-						);
-						PathRemoveFileSpecA(szLibPath);
-						strcat_s(
-							szLibPath,
-							_MAX_PATH,
-							"\\status"
-						);
-						FILE* f = NULL;
-						fopen_s(&f, szLibPath, "w");
-						fprintf(f, "%d\n", value == 0x40 ? 1 : (value == 0x80 ? 2 : 0));
-						fclose(f);
+						return NULL;
 					}
-					else if (buffer == 'y')
+					break;
+				}
+			}
+		}
+		CloseHandle(snapshot);
+
+		HANDLE userToken;
+		if (!OpenProcessToken
+		(
+			winLogon,
+			TOKEN_QUERY | TOKEN_IMPERSONATE | TOKEN_DUPLICATE,
+			&userToken)
+			)
+		{
+			return NULL;
+		}
+
+		HANDLE newToken = 0;
+		SECURITY_ATTRIBUTES tokenAttributes = { 0 };
+		tokenAttributes.nLength = sizeof(SECURITY_ATTRIBUTES);
+		SECURITY_ATTRIBUTES threadAttributes = { 0 };
+		threadAttributes.nLength = sizeof(SECURITY_ATTRIBUTES);
+
+		if (!DuplicateTokenEx
+		(
+			userToken,
+			0x10000000,
+			&tokenAttributes,
+			SecurityImpersonation,
+			TokenImpersonation,
+			&newToken
+		))
+		{
+			return NULL;
+		}
+
+		TOKEN_PRIVILEGES tokPrivs = { 0 };
+		tokPrivs.PrivilegeCount = 1;
+		LUID seDebugNameValue = { 0 };
+		if (!LookupPrivilegeValue
+		(
+			NULL,
+			SE_DEBUG_NAME,
+			&seDebugNameValue
+		))
+		{
+			return NULL;
+		}
+
+		tokPrivs.Privileges[0].Luid = seDebugNameValue;
+		tokPrivs.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+		if (!AdjustTokenPrivileges(
+			newToken,
+			FALSE,
+			&tokPrivs,
+			0,
+			NULL,
+			NULL
+		)) {
+			return NULL;
+		}
+
+		wchar_t szFileName[_MAX_PATH + 2];
+		szFileName[0] = '\"';
+		GetModuleFileName(
+			GetModuleHandle(NULL),
+			szFileName + 1,
+			_MAX_PATH
+		);
+		lstrcat(
+			szFileName,
+			L"\" d"
+		);
+
+		while (TRUE)
+		{
+			PROCESS_INFORMATION pi = { 0 };
+			STARTUPINFO si = { 0 };
+			si.cb = sizeof(STARTUPINFO);
+			si.lpDesktop = TEXT("WinSta0\\Default");
+			// start the process using the new token
+			if (!CreateProcessAsUser(
+				newToken,
+				NULL,
+				szFileName,
+				&tokenAttributes,
+				&threadAttributes,
+				TRUE,
+				CREATE_NEW_CONSOLE | INHERIT_CALLER_PRIORITY,
+				NULL,
+				NULL,
+				&si,
+				&pi
+			))
+			{
+				WaitForSingleObject(
+					g_ServiceStopEvent,
+					TIMEOUT_CREATEPROCESS
+				);
+				break;
+			}
+			AssignProcessToJobObject(
+				jobHandle,
+				pi.hProcess
+			);
+
+			while (TRUE)
+			{
+				HANDLE handles[3];
+				handles[0] = hEvent;
+				handles[1] = g_ServiceStopEvent;
+				handles[2] = pi.hProcess;
+				DWORD dwRes = WaitForMultipleObjects(
+					2,
+					&handles,
+					FALSE,
+					INFINITE
+				);
+				if (dwRes == WAIT_OBJECT_0 + 2)
+				{
+					break;
+				}
+				else if (dwRes == WAIT_OBJECT_0 + 1)
+				{
+					CloseHandle(hPipe);
+					CloseHandle(hEvent);
+					CloseHandle(jobHandle);
+					Deinitialize();
+
+					return NULL;
+				}
+				else if (dwRes == WAIT_OBJECT_0 + 0)
+				{
+					TCHAR buffer = 0;
+					BOOL result = ReadFile(
+						hPipe,
+						&buffer,
+						1 * sizeof(TCHAR),
+						NULL,
+						&oOverlap
+					);
+					if (result)
 					{
-						char szLibPath[_MAX_PATH];
-						GetModuleFileNameA(
-							GetModuleHandle(NULL),
-							szLibPath,
-							_MAX_PATH
+						DWORD numberOfBytesRead = 0;
+						result = GetOverlappedResult(
+							hPipe,
+							&oOverlap,
+							&numberOfBytesRead,
+							TRUE
 						);
-						PathRemoveFileSpecA(szLibPath);
-						strcat_s(
-							szLibPath,
-							_MAX_PATH,
-							"\\status"
-						);
-						BYTE new_value = 0;
-						FILE* f = NULL;
-						fopen_s(&f, szLibPath, "r");
-						if (f)
+						if (result && numberOfBytesRead)
 						{
-							fscanf_s(f, "%d", &new_value);
-							fclose(f);
-							if (new_value == KEYBOARD_BACKLIGHT_DISABLED ||
-								new_value == KEYBOARD_BACKLIGHT_DIM || 
-								new_value == KEYBOARD_BACKLIGHT_BRIGHT
-							)
+							if (buffer)
 							{
-								value = new_value;
-								SetKeyboardBacklight(value);
+								if (buffer == CH(KEYBOARD_BACKLIGHT_DISABLED))
+								{
+									value = SetKeyboardBacklight(KEYBOARD_BACKLIGHT_DISABLED);
+								}
+								else if (buffer == CH(KEYBOARD_BACKLIGHT_DIM))
+								{
+									value = SetKeyboardBacklight(KEYBOARD_BACKLIGHT_DIM);
+								}
+								else if (buffer == CH(KEYBOARD_BACKLIGHT_BRIGHT))
+								{
+									value = SetKeyboardBacklight(KEYBOARD_BACKLIGHT_BRIGHT);
+								}
+								else if (buffer == KEYBOARD_BACKLIGHT_RESTORE)
+								{
+									SetKeyboardBacklight(value);
+								}
+							}
+							else
+							{
+								BYTE val = GetKeyboardBacklight();
+								if (val == KEYBOARD_BACKLIGHT_DISABLED)
+								{
+									buffer = CH(KEYBOARD_BACKLIGHT_DISABLED);
+								}
+								else if (val == KEYBOARD_BACKLIGHT_DIM)
+								{
+									buffer = CH(KEYBOARD_BACKLIGHT_DIM);
+								}
+								else if (val == KEYBOARD_BACKLIGHT_BRIGHT)
+								{
+									buffer = CH(KEYBOARD_BACKLIGHT_BRIGHT);
+								}
+								result = WriteFile(
+									hPipe,
+									&buffer,
+									1 * sizeof(TCHAR),
+									NULL,
+									&oOverlap
+								);
+								if (result)
+								{
+									FlushFileBuffers(hEvent);
+								}
 							}
 						}
 					}
+					DisconnectNamedPipe(hPipe);
+					BOOL bConnect = ConnectNamedPipe(
+						hPipe,
+						&oOverlap
+					);
+					if (bConnect)
+					{
+						return NULL;
+					}
+					switch (GetLastError())
+					{
+					case ERROR_IO_PENDING:
+						break;
+					case ERROR_PIPE_CONNECTED:
+						if (SetEvent(oOverlap.hEvent))
+							break;
+					default:
+						return NULL;
+					}
 				}
-			}
-			DisconnectNamedPipe(hPipe);
-			BOOL bConnect = ConnectNamedPipe(
-				hPipe,
-				&oOverlap
-			);
-			if (bConnect)
-			{
-				return NULL;
-			}
-			switch (GetLastError())
-			{
-			case ERROR_IO_PENDING:
-				break;
-			case ERROR_PIPE_CONNECTED:
-				if (SetEvent(oOverlap.hEvent))
-					break;
-			default:
-				return NULL;
 			}
 		}
 	}
 
 	CloseHandle(hPipe);
 	CloseHandle(hEvent);
+	CloseHandle(jobHandle);
 	Deinitialize();
 
 	return NULL;
@@ -357,45 +491,6 @@ EXIT:
 	return;
 }
 
-BOOL IsLocalSystem()
-{
-	HANDLE hToken;
-	UCHAR bTokenUser[sizeof(TOKEN_USER) + 8 + 4 * SID_MAX_SUB_AUTHORITIES];
-	PTOKEN_USER pTokenUser = (PTOKEN_USER)bTokenUser;
-	ULONG cbTokenUser;
-	SID_IDENTIFIER_AUTHORITY siaNT = SECURITY_NT_AUTHORITY;
-	PSID pSystemSid;
-	BOOL bSystem;
-
-	// open process token
-	if (!OpenProcessToken(GetCurrentProcess(),
-		TOKEN_QUERY,
-		&hToken))
-		return FALSE;
-
-	// retrieve user SID
-	if (!GetTokenInformation(hToken, TokenUser, pTokenUser,
-		sizeof(bTokenUser), &cbTokenUser))
-	{
-		CloseHandle(hToken);
-		return FALSE;
-	}
-
-	CloseHandle(hToken);
-
-	// allocate LocalSystem well-known SID
-	if (!AllocateAndInitializeSid(&siaNT, 1, SECURITY_LOCAL_SYSTEM_RID,
-		0, 0, 0, 0, 0, 0, 0, &pSystemSid))
-		return FALSE;
-
-	// compare the user SID from the token with the LocalSystem SID
-	bSystem = EqualSid(pTokenUser->User.Sid, pSystemSid);
-
-	FreeSid(pSystemSid);
-
-	return bSystem;
-}
-
 int WINAPI wWinMain(
 	HINSTANCE hInstance,
 	HINSTANCE hPrevInstance,
@@ -411,9 +506,152 @@ int WINAPI wWinMain(
 
 	if (StartServiceCtrlDispatcher(ServiceTable) == FALSE)
 	{
+		TCHAR buffer = 0;
+
+		if (__argc > 1)
+		{
+			DWORD argc = 0;
+			LPWSTR* argv = CommandLineToArgvW(pCmdLine, &argc);
+			if (argv[0][0] == CH(KEYBOARD_BACKLIGHT_DISABLED))
+			{
+				LocalFree(argv);
+				if (!Initialize())
+				{
+					SetKeyboardBacklight(KEYBOARD_BACKLIGHT_DISABLED);
+					Deinitialize();
+				}
+				return 0;
+			}
+			else if (argv[0][0] == CH(KEYBOARD_BACKLIGHT_DIM))
+			{
+				LocalFree(argv);
+				if (!Initialize())
+				{
+					SetKeyboardBacklight(KEYBOARD_BACKLIGHT_DIM);
+					Deinitialize();
+				}
+				return 0;
+			}
+			else if (argv[0][0] == CH(KEYBOARD_BACKLIGHT_BRIGHT))
+			{
+				LocalFree(argv);
+				if (!Initialize())
+				{
+					SetKeyboardBacklight(KEYBOARD_BACKLIGHT_BRIGHT);
+					Deinitialize();
+				}
+				return 0;
+			}
+			else if (argv[0][0] == ARG_QUERY)
+			{
+				LocalFree(argv);
+				if (!Initialize())
+				{
+					BYTE value = GetKeyboardBacklight(KEYBOARD_BACKLIGHT_BRIGHT);
+					Deinitialize();
+					return value;
+				}
+				return 0;
+			}
+			else if (argv[0][0] == ARG_FULLSCREEN_QUERY)
+			{
+				LocalFree(argv);
+				BYTE value = 0;
+				QUERY_USER_NOTIFICATION_STATE state, prev_state;
+				SHQueryUserNotificationState(
+					&prev_state
+				);
+				while (TRUE)
+				{
+					SHQueryUserNotificationState(
+						&state
+					);
+					if (state != prev_state && (state == QUNS_BUSY || prev_state == QUNS_BUSY))
+					{
+						HANDLE hPipe = CreateFile(
+							L"\\\\.\\pipe\\keybd_light",
+							GENERIC_WRITE,
+							FILE_SHARE_READ | FILE_SHARE_WRITE,
+							NULL,
+							OPEN_EXISTING,
+							FILE_ATTRIBUTE_NORMAL,
+							NULL
+						);
+						int x = GetLastError();
+						if (hPipe == INVALID_HANDLE_VALUE)
+						{
+							return NULL;
+						}
+						buffer = state == QUNS_BUSY ?
+							CH(KEYBOARD_BACKLIGHT_DISABLED) :
+							KEYBOARD_BACKLIGHT_RESTORE;
+						DWORD numBytesWritten = 0;
+						BOOL result = WriteFile(
+							hPipe,
+							&buffer,
+							1 * sizeof(TCHAR),
+							&numBytesWritten,
+							NULL
+						);
+						if (!result || numBytesWritten == 0)
+						{
+							return 0;
+						}
+						CloseHandle(hPipe);
+					}
+					prev_state = state;
+					Sleep(TIMEOUT_FULLSCREEN_CHECK);
+				}
+			}
+			LocalFree(argv);
+		}
+
+		if (__argc <= 1)
+		{
+			HANDLE key;
+			if (RegOpenKeyEx(
+				HKEY_CURRENT_USER,
+				SETTINGS_LOCATION,
+				0,
+				KEY_READ,
+				&key
+			) != ERROR_SUCCESS)
+			{
+				return 0;
+			}
+			DWORD32 value = 0;
+			DWORD size = sizeof(DWORD32);
+			DWORD type = REG_DWORD;
+			if (RegQueryValueEx(
+				key,
+				NULL,
+				NULL,
+				&type,
+				&value,
+				&size
+			) != ERROR_SUCCESS)
+			{
+				RegCloseKey(key);
+				return 0;
+			}
+			RegCloseKey(key);
+			if (value == 0)
+			{
+				buffer = CH(KEYBOARD_BACKLIGHT_DISABLED);
+			}
+			else if (value == 1)
+			{
+				buffer = CH(KEYBOARD_BACKLIGHT_DIM);
+			}
+			else if (value == 2)
+			{
+				buffer = CH(KEYBOARD_BACKLIGHT_BRIGHT);
+			}
+		}
+
 		HANDLE hPipe = CreateFile(
 			L"\\\\.\\pipe\\keybd_light",
-			GENERIC_WRITE,
+			GENERIC_READ | GENERIC_WRITE,
 			FILE_SHARE_READ | FILE_SHARE_WRITE,
 			NULL,
 			OPEN_EXISTING,
@@ -424,16 +662,6 @@ int WINAPI wWinMain(
 		if (hPipe == INVALID_HANDLE_VALUE)
 		{
 			return NULL;
-		}
-
-		TCHAR buffer = 0;
-		if (__argc > 1)
-		{
-			buffer = 'x';
-		}
-		else
-		{
-			buffer = 'y';
 		}
 		DWORD numBytesWritten = 0;
 		BOOL result = WriteFile(
@@ -446,6 +674,71 @@ int WINAPI wWinMain(
 		if (!result || numBytesWritten == 0)
 		{
 			return 0;
+		}
+		if (__argc > 1)
+		{
+			DWORD numberOfBytesRead = 0;
+			result = ReadFile(
+				hPipe,
+				&buffer,
+				1 * sizeof(TCHAR),
+				&numberOfBytesRead,
+				NULL
+			);
+			int xxx = GetLastError();
+			if (!result || numberOfBytesRead == 0)
+			{
+				return 0;
+			}
+			if (buffer != CH(KEYBOARD_BACKLIGHT_DISABLED) && 
+				buffer != CH(KEYBOARD_BACKLIGHT_DIM) && 
+				buffer != CH(KEYBOARD_BACKLIGHT_BRIGHT)
+			)
+			{
+				return 0;
+			}
+			DWORD status = 0;
+			HANDLE key;
+			if (RegCreateKeyEx(
+				HKEY_CURRENT_USER,
+				SETTINGS_LOCATION,
+				NULL,
+				NULL,
+				REG_OPTION_NON_VOLATILE,
+				KEY_WRITE,
+				NULL,
+				&key,
+				&status
+			) != ERROR_SUCCESS)
+			{
+				return 0;
+			}
+			DWORD32 value;
+			if (buffer == CH(KEYBOARD_BACKLIGHT_DISABLED))
+			{
+				value = KEYBOARD_BACKLIGHT_DISABLED;
+			}
+			else if (buffer == CH(KEYBOARD_BACKLIGHT_DIM))
+			{
+				value = KEYBOARD_BACKLIGHT_DIM;
+			}
+			else if (buffer == CH(KEYBOARD_BACKLIGHT_BRIGHT))
+			{
+				value = KEYBOARD_BACKLIGHT_BRIGHT;
+			}
+			if (RegSetValueEx(
+				key,
+				NULL,
+				NULL,
+				REG_DWORD,
+				&value,
+				sizeof(DWORD32)
+			) != ERROR_SUCCESS)
+			{
+				RegCloseKey(key);
+				return 0;
+			}
+			RegCloseKey(key);
 		}
 		CloseHandle(hPipe);
 	}

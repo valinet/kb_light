@@ -207,9 +207,10 @@ BYTE GetKeyboardBacklight()
     return status;
 }
 
-VOID SetKeyboardBacklight(BYTE status)
+BYTE SetKeyboardBacklight(BYTE status)
 {
-    BYTE value = 0;
+    BYTE prev = 0, value = 0;
+    prev = GetKeyboardBacklight();
     if (status == KEYBOARD_BACKLIGHT_BRIGHT)
     {
         value = DRIVER_WINRING0_KEYBOARD_BACKLIGHT_BRIGHT;
@@ -226,6 +227,7 @@ VOID SetKeyboardBacklight(BYTE status)
         DRIVER_WINRING0_KEYBOARD_BACKLIGHT_OFFSET,
         value
     );
+    return prev;
 }
 
 DWORD Initialize()
