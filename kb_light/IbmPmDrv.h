@@ -2,6 +2,7 @@
 #include <Windows.h>
 #include "common.h"
 
+// credits: https://github.com/pspatel321/auto-backlight-for-thinkpad/blob/master/Auto%20Backlight%20for%20ThinkPad/Backlight.cs
 #define DRIVER_IBMPMDRV_CUSTOM_MASK		0x00200000
 #define DRIVER_IBMPMDRV_READY_MASK		0x0050000
 #define DRIVER_IBMPMDRV_WRITE_MASK		0x100
