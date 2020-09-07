@@ -3,8 +3,15 @@
 #include <shlwapi.h>
 #pragma comment(lib, "Shlwapi.lib")
 #include <Lmcons.h>
+#define DRIVER_IBMPMDRV					0
+#define DRIVER_WINRING0					1
+#define DRIVER DRIVER_IBMPMDRV
+#define TIMEOUT							2000
+#if DRIVER == DRIVER_IBMPMDRV
+#include "IbmPmDrv.h"
+#elif DRIVER == DRIVER_WINRING0
 #include "WinRing0.h"
-#define TIMEOUT 2000
+#endif
 
 SERVICE_STATUS        g_ServiceStatus = { 0 };
 SERVICE_STATUS_HANDLE g_StatusHandle = NULL;
@@ -20,6 +27,11 @@ DWORD WINAPI ServiceWorkerThread(
 	LPVOID lpParam
 )
 {
+	if (Initialize())
+	{
+		return NULL;
+	}
+
 	// https://support.microsoft.com/en-my/help/110148/prb-error-invalid-parameter-from-writefile-or-readfile
 	OVERLAPPED oOverlap = { 0 };
 
@@ -78,42 +90,6 @@ DWORD WINAPI ServiceWorkerThread(
 		return NULL;
 	}
 
-	HMODULE hWinRing0 = LoadLibrary(L"WinRing0x64.dll");
-	DWORD dwRet = GetLastError();
-	if (!hWinRing0)
-	{
-		return NULL;
-	}
-	InitializeOls = GetProcAddress(hWinRing0, "InitializeOls");
-	if (!InitializeOls)
-	{
-		return NULL;
-	}
-	DeinitializeOls = GetProcAddress(hWinRing0, "DeinitializeOls");
-	if (!DeinitializeOls)
-	{
-		return NULL;
-	}
-	ReadIoPortByte = GetProcAddress(hWinRing0, "ReadIoPortByte");
-	if (!ReadIoPortByte)
-	{
-		return NULL;
-	}
-	WriteIoPortByte = GetProcAddress(hWinRing0, "WriteIoPortByte");
-	if (!WriteIoPortByte)
-	{
-		return NULL;
-	}
-	GetDllStatus = GetProcAddress(hWinRing0, "GetDllStatus");
-	if (!GetDllStatus)
-	{
-		return NULL;
-	}
-	if (!InitializeOls())
-	{
-		return GetDllStatus();
-	}
-
 	BYTE value = 0;
 	QUERY_USER_NOTIFICATION_STATE state, prev_state;
 	SHQueryUserNotificationState(
@@ -128,21 +104,12 @@ DWORD WINAPI ServiceWorkerThread(
 		{
 			if (state == QUNS_BUSY)
 			{
-				ReadByteFromEC(
-					KEYBOARD_BACKLIGHT_OFFSET,
-					&value
-				);
-				WriteByteToEC(
-					KEYBOARD_BACKLIGHT_OFFSET,
-					KEYBOARD_BACKLIGHT_DISABLED
-				);
+				value = GetKeyboardBacklight();
+				SetKeyboardBacklight(KEYBOARD_BACKLIGHT_DISABLED);
 			}
 			else
 			{
-				WriteByteToEC(
-					KEYBOARD_BACKLIGHT_OFFSET,
-					value
-				);
+				SetKeyboardBacklight(value);
 			}
 		}
 		prev_state = state;
@@ -182,10 +149,7 @@ DWORD WINAPI ServiceWorkerThread(
 				{
 					if (buffer == 'x')
 					{
-						ReadByteFromEC(
-							KEYBOARD_BACKLIGHT_OFFSET,
-							&value
-						);
+						value = GetKeyboardBacklight();
 						char szLibPath[_MAX_PATH];
 						GetModuleFileNameA(
 							GetModuleHandle(NULL),
@@ -224,13 +188,13 @@ DWORD WINAPI ServiceWorkerThread(
 						{
 							fscanf_s(f, "%d", &new_value);
 							fclose(f);
-							if (new_value == 0 || new_value == 1 || new_value == 2)
+							if (new_value == KEYBOARD_BACKLIGHT_DISABLED ||
+								new_value == KEYBOARD_BACKLIGHT_DIM || 
+								new_value == KEYBOARD_BACKLIGHT_BRIGHT
+							)
 							{
-								value = new_value == 1 ? 0x40 : (new_value == 2 ? 0x80 : 0);
-								WriteByteToEC(
-									KEYBOARD_BACKLIGHT_OFFSET,
-									value
-								);
+								value = new_value;
+								SetKeyboardBacklight(value);
 							}
 						}
 					}
@@ -257,9 +221,10 @@ DWORD WINAPI ServiceWorkerThread(
 			}
 		}
 	}
-	DeinitializeOls();
+
 	CloseHandle(hPipe);
 	CloseHandle(hEvent);
+	Deinitialize();
 
 	return NULL;
 }

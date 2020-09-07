@@ -18,6 +18,12 @@
     <ClInclude Include="WinRing0.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="IbmPmDrv.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="common.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.c">

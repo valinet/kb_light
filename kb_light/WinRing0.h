@@ -1,11 +1,13 @@
 #pragma once
 #include <Windows.h>
+#include "common.h"
 
-BOOL(*InitializeOls)();
-DWORD(*GetDllStatus)();
-VOID(*DeinitializeOls)();
-BYTE(*ReadIoPortByte)(USHORT port);
-VOID(*WriteIoPortByte)(USHORT port, BYTE value);
+HMODULE hWinRing0 = NULL;
+BOOL(*InitializeOls)() = NULL;
+DWORD(*GetDllStatus)() = NULL;
+VOID(*DeinitializeOls)() = NULL;
+BYTE(*ReadIoPortByte)(USHORT port) = NULL;
+VOID(*WriteIoPortByte)(USHORT port, BYTE value) = NULL;
 
 // Registers of the embedded controller   
 #define EC_DATAPORT     0x62    // EC data io-port   
@@ -26,10 +28,10 @@ VOID(*WriteIoPortByte)(USHORT port, BYTE value);
 
 #define DEFAULT_WAIT_TIMEOUT 1000
 
-#define KEYBOARD_BACKLIGHT_OFFSET   0x0D
-#define KEYBOARD_BACKLIGHT_DISABLED 0x00
-#define KEYBOARD_BACKLIGHT_DIM      0x40
-#define KEYBOARD_BACKLIGHT_BRIGHT   0x80
+#define DRIVER_WINRING0_KEYBOARD_BACKLIGHT_OFFSET   0x0D
+#define DRIVER_WINRING0_KEYBOARD_BACKLIGHT_DISABLED 0x00
+#define DRIVER_WINRING0_KEYBOARD_BACKLIGHT_DIM      0x40
+#define DRIVER_WINRING0_KEYBOARD_BACKLIGHT_BRIGHT   0x80
 
 //-------------------------------------------------------------------------   
 //  read control port and wait for set/clear of a status bit   
@@ -123,7 +125,7 @@ ReadByteFromEC(BYTE offset, BYTE* pdata)
                     //       this never seems to happen   
                     ok = waitportstatus(EC_STAT_IBF, FALSE, DEFAULT_WAIT_TIMEOUT);
                     if (ok) {
-                        char data = -1;
+                        BYTE data = -1;
 
                         // read result (EC byte at offset)   
                         ok = readport(EC_DATAPORT, &data);
@@ -180,4 +182,94 @@ WriteByteToEC(BYTE offset, BYTE data)
     }
 
     return ok;
+}
+
+BYTE GetKeyboardBacklight()
+{
+    BYTE status = 0, value = 0;
+    ReadByteFromEC(
+        DRIVER_WINRING0_KEYBOARD_BACKLIGHT_OFFSET,
+        &value
+    );
+    if (value == DRIVER_WINRING0_KEYBOARD_BACKLIGHT_BRIGHT)
+    {
+        status = KEYBOARD_BACKLIGHT_BRIGHT;
+    }
+    else if (value == DRIVER_WINRING0_KEYBOARD_BACKLIGHT_DIM)
+    {
+        status = KEYBOARD_BACKLIGHT_DIM;
+    }
+    else
+    {
+        status = KEYBOARD_BACKLIGHT_DISABLED;
+    }
+    return status;
+}
+
+VOID SetKeyboardBacklight(BYTE status)
+{
+    BYTE value = 0;
+    if (status == KEYBOARD_BACKLIGHT_BRIGHT)
+    {
+        value = DRIVER_WINRING0_KEYBOARD_BACKLIGHT_BRIGHT;
+    }
+    else if (status == KEYBOARD_BACKLIGHT_DIM)
+    {
+        value = DRIVER_WINRING0_KEYBOARD_BACKLIGHT_DIM;
+    }
+    else
+    {
+        value = DRIVER_WINRING0_KEYBOARD_BACKLIGHT_DISABLED;
+    }
+    WriteByteToEC(
+        DRIVER_WINRING0_KEYBOARD_BACKLIGHT_OFFSET,
+        value
+    );
+}
+
+DWORD Initialize()
+{
+    hWinRing0 = LoadLibrary(L"WinRing0x64.dll");
+    DWORD dwRet = GetLastError();
+    if (!hWinRing0)
+    {
+        return 1;
+    }
+    InitializeOls = (BOOL(*)())GetProcAddress(hWinRing0, "InitializeOls");
+    if (!InitializeOls)
+    {
+        return 2;
+    }
+    GetDllStatus = (DWORD(*)())GetProcAddress(hWinRing0, "GetDllStatus");
+    if (!GetDllStatus)
+    {
+        return 3;
+    }
+    DeinitializeOls = (VOID(*)())GetProcAddress(hWinRing0, "DeinitializeOls");
+    if (!DeinitializeOls)
+    {
+        return 4;
+    }
+    ReadIoPortByte = (BYTE(*)(USHORT))GetProcAddress(hWinRing0, "ReadIoPortByte");
+    if (!ReadIoPortByte)
+    {
+        return 5;
+    }
+    WriteIoPortByte = (VOID(*)(USHORT, BYTE))GetProcAddress(hWinRing0, "WriteIoPortByte");
+    if (!WriteIoPortByte)
+    {
+        return 6;
+    }
+    if (!InitializeOls())
+    {
+        return GetDllStatus();
+    }
+    return 0;
+}
+
+VOID Deinitialize()
+{
+    DeinitializeOls();
+    FreeLibrary(hWinRing0);
+    CloseHandle(hWinRing0);
 }
