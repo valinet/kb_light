@@ -5,6 +5,35 @@
 #define ARG_QUERY						'?'
 #define ARG_FULLSCREEN_QUERY			'd'
 
+static LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+	static UINT hookMsg = 0;
+	static TCHAR buffer = 0;
+	static QUERY_USER_NOTIFICATION_STATE prev_state = 0;
+
+	if (hookMsg == 0)
+		hookMsg = RegisterWindowMessageW(L"SHELLHOOK");
+	if (uMsg == hookMsg && (wParam == 0x35 || wParam == 0x36)) { // https://github.com/dechamps/RudeWindowFixer
+		SetTimer(hWnd, wParam, 50, NULL);
+	}
+	else if (uMsg == WM_TIMER) {
+		KillTimer(hWnd, wParam);
+		QUERY_USER_NOTIFICATION_STATE state = 0;
+		SHQueryUserNotificationState(&state);
+		if (state != prev_state && (state == QUNS_BUSY || prev_state == QUNS_BUSY)) {
+			HANDLE hPipe = CreateFileW(L"\\\\.\\pipe\\keybd_light", GENERIC_WRITE,
+				FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+			if (hPipe == INVALID_HANDLE_VALUE)
+				return DefWindowProcW(hWnd, uMsg, wParam, lParam);
+			buffer = (state == QUNS_BUSY) ? CH(KEYBOARD_BACKLIGHT_DISABLED) : KEYBOARD_BACKLIGHT_RESTORE;
+			DWORD numBytesWritten = 0;
+			BOOL result = WriteFile(hPipe, &buffer, sizeof(TCHAR), &numBytesWritten, NULL);
+			CloseHandle(hPipe);
+		}
+		prev_state = state;
+	}
+	return DefWindowProcW(hWnd, uMsg, wParam, lParam);
+}
+
 INT WINAPI ApplicationMain(
 	HINSTANCE hInstance,
 	HINSTANCE hPrevInstance,
@@ -62,52 +91,30 @@ INT WINAPI ApplicationMain(
 		else if (argv[0][0] == ARG_FULLSCREEN_QUERY)
 		{
 			LocalFree(argv);
-			BYTE value = 0;
-			QUERY_USER_NOTIFICATION_STATE state, prev_state;
-			SHQueryUserNotificationState(
-				&prev_state
-			);
-			while (TRUE)
-			{
-				SHQueryUserNotificationState(
-					&state
-				);
-				if (state != prev_state && (state == QUNS_BUSY || prev_state == QUNS_BUSY))
-				{
-					HANDLE hPipe = CreateFile(
-						L"\\\\.\\pipe\\keybd_light",
-						GENERIC_WRITE,
-						FILE_SHARE_READ | FILE_SHARE_WRITE,
-						NULL,
-						OPEN_EXISTING,
-						FILE_ATTRIBUTE_NORMAL,
-						NULL
-					);
-					int x = GetLastError();
-					if (hPipe == INVALID_HANDLE_VALUE)
-					{
-						return NULL;
-					}
-					buffer = state == QUNS_BUSY ?
-						CH(KEYBOARD_BACKLIGHT_DISABLED) :
-						KEYBOARD_BACKLIGHT_RESTORE;
-					DWORD numBytesWritten = 0;
-					BOOL result = WriteFile(
-						hPipe,
-						&buffer,
-						1 * sizeof(TCHAR),
-						&numBytesWritten,
-						NULL
-					);
-					if (!result || numBytesWritten == 0)
-					{
-						return 0;
-					}
-					CloseHandle(hPipe);
-				}
-				prev_state = state;
-				Sleep(TIMEOUT_FULLSCREEN_CHECK);
+
+			WNDCLASSW wc = { 0 };
+			wc.lpfnWndProc = WndProc;
+			wc.hInstance = hInstance;
+			wc.lpszClassName = L"{104B1C5D-E019-4179-AFA2-8252EF94BB16}";
+
+			ATOM atom = RegisterClassW(&wc);
+			if (!atom)
+				return GetLastError();
+			
+			HWND hWnd = CreateWindowExW(0, atom, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, hInstance, NULL);
+			if (!hWnd)
+				return GetLastError();
+
+			if (!RegisterShellHookWindow(hWnd))
+				return GetLastError();
+
+			MSG msg;
+			while (GetMessageW(&msg, NULL, 0, 0) > 0) {
+				TranslateMessage(&msg);
+				DispatchMessageW(&msg);
 			}
+
+			DeregisterShellHookWindow(hWnd);
 		}
 		LocalFree(argv);
 	}
