@@ -7,12 +7,16 @@
 
 static LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 	static UINT hookMsg = 0;
+	static UINT atomRdp = 0;
 	static TCHAR buffer = 0;
 	static QUERY_USER_NOTIFICATION_STATE prev_state = 0;
 
 	if (hookMsg == 0)
 		hookMsg = RegisterWindowMessageW(L"SHELLHOOK");
-	if (uMsg == hookMsg && (wParam == 0x35 || wParam == 0x36)) { // https://github.com/dechamps/RudeWindowFixer
+	if (atomRdp == 0)
+		atomRdp = RegisterWindowMessageW(L"TscShellContainerClass");
+	if (uMsg == hookMsg && (wParam == 0x35 || wParam == 0x36) && // https://github.com/dechamps/RudeWindowFixer
+		GetClassWord(GetForegroundWindow(), GCW_ATOM) != atomRdp) { // Exclude full screen Remote Desktop windows
 		SetTimer(hWnd, wParam, 50, NULL);
 	}
 	else if (uMsg == WM_TIMER) {
